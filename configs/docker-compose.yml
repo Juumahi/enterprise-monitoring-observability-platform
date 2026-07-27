@@ -1,26 +1,87 @@
-version: '2.1'
+version: '3.8'
 
 services:
-  alloy:
-    image: grafana/alloy:latest
-    container_name: alloy
-    restart: unless-stopped
-    network_mode: host
-    privileged: true
-    command:
-      - run
-      - --server.http.listen-addr=0.0.0.0:12345
-      - --storage.path=/var/lib/alloy/data
-      - /etc/alloy/config.alloy
+
+  loki:
+    image: grafana/loki:${GRAFANA_LOKI_VERSION:-3.5.2}
+    ports:
+      - 3100:3100/tcp
     volumes:
-      - ./config.alloy:/etc/alloy/config.alloy:ro
-      - /var/log:/var/log:ro
-      - ./alloy-data:/var/lib/alloy/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./loki-config.yaml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.5.0}
+    command:
+      - --web.enable-remote-write-receiver
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - 9091:9090/tcp
+    volumes:
+      - ./prom-config.yaml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    mem_limit: 1g
+    cpus: 1.0
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-12.0.2}
     environment:
-      - HOSTNAME=${HOSTNAME:-binblog-vm}
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_BASIC_ENABLED=false
+    ports:
+      - 3000:3000/tcp
+    volumes:
+      - grafana-data:/var/lib/grafana
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources
+        cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
+        apiVersion: 1
+        datasources:
+        - name: Loki
+          type: loki
+          access: proxy
+          orgId: 1
+          url: http://loki:3100
+          basicAuth: false
+          isDefault: false
+          version: 1
+          editable: false
+        - name: Prometheus
+          type: prometheus
+          orgId: 1
+          url: http://prometheus:9090
+          basicAuth: false
+          isDefault: true
+          version: 1
+          editable: false
+        EOF
+        /run.sh
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:${GRAFANA_ALLOY_VERSION:-v1.10.0}
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy
+      - /var/log:/var/log:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    mem_limit: 256m
+    cpus: 0.25
+    restart: unless-stopped
+
+volumes:
+  grafana-data:
+  prometheus-data:
+  loki-data:
